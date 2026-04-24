@@ -107,8 +107,10 @@ async function fetchSheet(name){
   var text=await resp.text();
   var json=JSON.parse(text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/)[1]);
   var rows=json.table.rows||[];
-  var cols=json.table.cols.map(function(c){return c.label;});
-  return rows.map(function(r){
+  if(rows.length===0)return[];
+  var cols=rows[0].c.map(function(c){return c?c.v:'';});
+  var dataRows=rows.slice(1);
+  return dataRows.map(function(r){
     var obj={};
     cols.forEach(function(c,i){obj[c]=r.c[i]?r.c[i].v:'';});
     return obj;
