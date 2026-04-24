@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Miles Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--navy:#0B1F3A;--gold:#D4A843;--gold-light:#F0C96A;--teal:#1D9E75;--red:#D85A30;--bg:#0D1520;--surface:#111E2E;--border:rgba(212,168,67,0.15);--text:#E8E4DC;--muted:#7A8A9A}
+body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+.header{background:var(--surface);border-bottom:1px solid var(--border);padding:20px 28px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:100}
+.logo{display:flex;align-items:center;gap:12px}
+.logo-mark{width:38px;height:38px;background:var(--gold);border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:14px;color:var(--navy)}
+.logo-text{font-size:15px;font-weight:700}
+.logo-sub{font-size:11px;color:var(--muted);font-family:'DM Mono',monospace}
+.header-right{font-family:'DM Mono',monospace;font-size:11px;color:var(--muted);text-align:right}
+.live-dot{display:inline-block;width:7px;height:7px;background:var(--teal);border-radius:50%;margin-right:5px;animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.main{padding:28px;max-width:1100px;margin:0 auto}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--gold);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.loading p{color:var(--muted);font-family:'DM Mono',monospace;font-size:12px}
+.error-msg{color:var(--red);font-family:'DM Mono',monospace;font-size:13px;text-align:center;padding:40px}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+@media(max-width:700px){.kpi-grid{grid-template-columns:repeat(2,1fr)}}
+.kpi{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:20px;position:relative;overflow:hidden}
+.kpi::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:16px 16px 0 0}
+.kpi.gold::before{background:var(--gold)}
+.kpi.teal::before{background:var(--teal)}
+.kpi.blue::before{background:#378ADD}
+.kpi.purple::before{background:#8B5CF6}
+.kpi-label{font-size:10px;font-family:'DM Mono',monospace;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px}
+.kpi-value{font-size:28px;font-weight:800;line-height:1}
+.kpi-sub{font-size:11px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace}
+.two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-bottom:24px}
+@media(max-width:800px){.two-col{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px}
+.card-title{font-size:11px;font-family:'DM Mono',monospace;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:18px;display:flex;align-items:center;gap:8px}
+.card-title span{color:var(--gold)}
+.loads-table{width:100%;border-collapse:collapse}
+.loads-table th{font-size:10px;font-family:'DM Mono',monospace;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em;text-align:left;padding:0 0 12px 0;border-bottom:1px solid var(--border)}
+.loads-table td{padding:12px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:13px}
+.loads-table tr:last-child td{border-bottom:none}
+.rt{font-weight:600}
+.arrow{color:var(--gold);margin:0 6px}
+.broker-tag{font-size:10px;font-family:'DM Mono',monospace;background:rgba(212,168,67,0.1);color:var(--gold);padding:3px 8px;border-radius:6px;white-space:nowrap}
+.amt{font-weight:700;color:var(--teal);font-family:'DM Mono',monospace}
+.mi{color:var(--muted);font-family:'DM Mono',monospace;font-size:12px}
+.pill{font-size:10px;padding:3px 8px;border-radius:6px;font-family:'DM Mono',monospace;white-space:nowrap}
+.paid{background:rgba(29,158,117,0.15);color:var(--teal)}
+.pending{background:rgba(212,168,67,0.12);color:var(--gold)}
+.overdue{background:rgba(216,90,48,0.15);color:var(--red)}
+.broker-row{margin-bottom:16px}
+.broker-row:last-child{margin-bottom:0}
+.broker-info{display:flex;justify-content:space-between;margin-bottom:6px}
+.broker-name{font-size:13px;font-weight:600}
+.broker-amt{font-size:13px;font-family:'DM Mono',monospace;color:var(--gold)}
+.bar-track{height:6px;background:rgba(255,255,255,0.06);border-radius:3px}
+.bar-fill{height:6px;border-radius:3px;background:linear-gradient(90deg,var(--gold),var(--gold-light));transition:width 1s ease}
+.exp-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.exp-row:last-child{border-bottom:none}
+.exp-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.exp-cat{font-size:13px;flex:1}
+.exp-amt{font-size:13px;font-family:'DM Mono',monospace;font-weight:500}
+.ret-big{font-size:36px;font-weight:800;color:var(--gold);margin-bottom:4px}
+.ret-sub{font-size:12px;color:var(--muted);font-family:'DM Mono',monospace;margin-bottom:20px}
+.ret-track{height:12px;background:rgba(255,255,255,0.06);border-radius:6px;margin-bottom:8px;overflow:hidden}
+.ret-fill{height:12px;border-radius:6px;background:linear-gradient(90deg,var(--teal),#2DD4A0);transition:width 1.2s ease}
+.ret-labels{display:flex;justify-content:space-between;font-size:11px;font-family:'DM Mono',monospace;color:var(--muted)}
+.ret-tip{margin-top:18px;background:rgba(29,158,117,0.08);border:1px solid rgba(29,158,117,0.2);border-radius:10px;padding:12px 14px}
+.ret-tip p{font-size:12px;color:var(--teal);font-family:'DM Mono',monospace}
+.ret-tip strong{color:var(--text)}
+.bottom-row{display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-bottom:24px}
+@media(max-width:900px){.bottom-row{grid-template-columns:1fr}}
+.empty{color:var(--muted);font-size:13px;font-family:'DM Mono',monospace;text-align:center;padding:20px 0}
+</style>
+</head>
+<body>
+<div class="header">
+  <div class="logo">
+    <div class="logo-mark">NN</div>
+    <div>
+      <div class="logo-text">Miles Dashboard</div>
+      <div class="logo-sub">Numda Numda Analytics</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div><span class="live-dot"></span>Live Data</div>
+    <div id="upd">--</div>
+  </div>
+</div>
+<div class="main">
+  <div class="loading" id="loading"><div class="spinner"></div><p>Loading your business data...</p></div>
+  <div id="dash" style="display:none"></div>
+  <div class="error-msg" id="err" style="display:none"></div>
+</div>
+<script>
+var SID = "{{ spreadsheet_id }}";
+function fmt(n){if(!n&&n!==0)return'$0';return'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});}
+function fmtN(n){return Number(n||0).toLocaleString('en-US',{minimumFractionDigits:0,maximumFractionDigits:0});}
+function gv(r,keys){for(var i=0;i<keys.length;i++){if(r[keys[i]]!==undefined&&r[keys[i]]!=='')return r[keys[i]];}return'';}
+async function fetchSheet(name){
+  var url='https://docs.google.com/spreadsheets/d/'+SID+'/gviz/tq?tqx=out:json&sheet='+encodeURIComponent(name);
+  var resp=await fetch(url);
+  var text=await resp.text();
+  var json=JSON.parse(text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/)[1]);
+  var rows=json.table.rows||[];
+  var cols=json.table.cols.map(function(c){return c.label;});
+  return rows.map(function(r){
+    var obj={};
+    cols.forEach(function(c,i){obj[c]=r.c[i]?r.c[i].v:'';});
+    return obj;
+  });
+}
+async function load(){
+  try{
+    var results=await Promise.allSettled([fetchSheet('Loads'),fetchSheet('Expenses'),fetchSheet('Retirement')]);
+    var ld=results[0].status==='fulfilled'?results[0].value:[];
+    var ed=results[1].status==='fulfilled'?results[1].value:[];
+    var rd=results[2].status==='fulfilled'?results[2].value:[];
+    var totalRev=ld.reduce(function(s,r){return s+(parseFloat(gv(r,['Amount','amount']))||0);},0);
+    var totalMi=ld.reduce(function(s,r){return s+(parseFloat(gv(r,['Miles','miles']))||0);},0);
+    var totalExp=ed.reduce(function(s,r){return s+(parseFloat(gv(r,['Amount','amount']))||0);},0);
+    var net=totalRev-totalExp;
+    var avgRate=totalMi>0?(totalRev/totalMi).toFixed(2):0;
+    var brokers={};
+    ld.forEach(function(r){var b=gv(r,['Broker','broker'])||'Unknown';brokers[b]=(brokers[b]||0)+(parseFloat(gv(r,['Amount','amount']))||0);});
+    var bArr=Object.entries(brokers).sort(function(a,b){return b[1]-a[1];});
+    var maxB=bArr[0]?bArr[0][1]:1;
+    var cats={};
+    var colors=['#D4A843','#1D9E75','#378ADD','#8B5CF6','#D85A30','#EC4899','#F59E0B'];
+    ed.forEach(function(r){var c=gv(r,['Category','category'])||'Other';cats[c]=(cats[c]||0)+(parseFloat(gv(r,['Amount','amount']))||0);});
+    var cArr=Object.entries(cats).sort(function(a,b){return b[1]-a[1];});
+    var retTotal=rd.reduce(function(s,r){return s+(parseFloat(gv(r,['Contribution Amount','contribution amount']))||0);},0);
+    var retPct=Math.min((retTotal/23000)*100,100).toFixed(1);
+    var sugRet=Math.min(net*0.15,1917).toFixed(0);
+    var recent=[].concat(ld).reverse().slice(0,5);
+    document.getElementById('upd').textContent=new Date().toLocaleTimeString();
+    var html='<div class="kpi-grid">'
+      +'<div class="kpi gold"><div class="kpi-label">Gross Revenue</div><div class="kpi-value">'+fmt(totalRev)+'</div><div class="kpi-sub">'+ld.length+' loads total</div></div>'
+      +'<div class="kpi teal"><div class="kpi-label">Net Profit</div><div class="kpi-value">'+fmt(net)+'</div><div class="kpi-sub">after '+fmt(totalExp)+' expenses</div></div>'
+      +'<div class="kpi blue"><div class="kpi-label">Total Miles</div><div class="kpi-value">'+fmtN(totalMi)+'</div><div class="kpi-sub">$'+avgRate+'/mile avg</div></div>'
+      +'<div class="kpi purple"><div class="kpi-label">401k Progress</div><div class="kpi-value">'+fmt(retTotal)+'</div><div class="kpi-sub">'+retPct+'% of $23k limit</div></div>'
+      +'</div>';
+    html+='<div class="two-col"><div class="card"><div class="card-title"><span>*</span> Recent Loads</div>';
+    if(recent.length===0){html+='<div class="empty">No loads logged yet</div>';}
+    else{
+      html+='<table class="loads-table"><thead><tr><th>Route</th><th>Miles</th><th>Amount</th><th>Broker</th><th>Status</th></tr></thead><tbody>';
+      recent.forEach(function(r){
+        var orig=gv(r,['Origin','origin'])||'?';
+        var dest=gv(r,['Destination','destination'])||'?';
+        var mi=gv(r,['Miles','miles'])||0;
+        var am=gv(r,['Amount','amount'])||0;
+        var br=gv(r,['Broker','broker'])||'?';
+        var st=gv(r,['Invoice Status','invoice status'])||'Pending';
+        var cls=st==='Paid'?'paid':st==='Overdue'?'overdue':'pending';
+        html+='<tr><td><span class="rt">'+orig+'<span class="arrow">-></span>'+dest+'</span></td><td><span class="mi">'+fmtN(mi)+'</span></td><td><span class="amt">'+fmt(am)+'</span></td><td><span class="broker-tag">'+br+'</span></td><td><span class="pill '+cls+'">'+st+'</span></td></tr>';
+      });
+      html+='</tbody></table>';
+    }
+    html+='</div><div class="card"><div class="card-title"><span>*</span> Broker Volume</div>';
+    if(bArr.length===0){html+='<div class="empty">No broker data yet</div>';}
+    else{bArr.slice(0,5).forEach(function(b){html+='<div class="broker-row"><div class="broker-info"><span class="broker-name">'+b[0]+'</span><span class="broker-amt">'+fmt(b[1])+'</span></div><div class="bar-track"><div class="bar-fill" style="width:'+(b[1]/maxB*100).toFixed(1)+'%"></div></div></div>';});}
+    html+='</div></div>';
+    html+='<div class="bottom-row"><div class="card"><div class="card-title"><span>*</span> Expenses</div>';
+    if(cArr.length===0){html+='<div class="empty">No expenses yet</div>';}
+    else{cArr.slice(0,6).forEach(function(c,i){html+='<div class="exp-row"><div class="exp-dot" style="background:'+colors[i%colors.length]+'"></div><div class="exp-cat">'+c[0]+'</div><div class="exp-amt">'+fmt(c[1])+'</div></div>';});}
+    html+='</div><div class="card"><div class="card-title"><span>*</span> Solo 401(k) Retirement</div>';
+    html+='<div class="ret-big">'+fmt(retTotal)+'</div><div class="ret-sub">contributed in 2026</div>';
+    html+='<div class="ret-track"><div class="ret-fill" id="rbar" style="width:0%"></div></div>';
+    html+='<div class="ret-labels"><span>$0</span><span>'+retPct+'%</span><span>$23,000</span></div>';
+    html+='<div class="ret-tip"><p>Suggested this month: <strong>'+fmt(sugRet)+'</strong> based on 15% of your net profit</p></div>';
+    html+='</div></div>';
+    document.getElementById('dash').innerHTML=html;
+    document.getElementById('loading').style.display='none';
+    document.getElementById('dash').style.display='block';
+    setTimeout(function(){var b=document.getElementById('rbar');if(b)b.style.width=retPct+'%';},300);
+  }catch(e){
+    document.getElementById('loading').style.display='none';
+    document.getElementById('err').style.display='block';
+    document.getElementById('err').textContent='Error: '+e.message+'. Make sure sheet is shared publicly.';
+  }
+}
+load();
+setInterval(load,60000);
+</script>
+</body>
+</html>
