@@ -117,12 +117,12 @@ async function fetchSheet(name) {
   if (rows.length === 0) return [];
   
   // Get headers from first row
-  var headers = rows[0].c.map(function(cell) {
-    return cell && cell.v ? String(cell.v).trim() : '';
+  var headers = json.table.cols.map(function(col) {
+  return col.label ? String(col.label).trim() : '';
   });
   
   // Build objects from remaining rows
-  return rows.slice(1).map(function(row) {
+  return rows.map(function(row) {
     var obj = {};
     headers.forEach(function(h, i) {
       obj[h] = (row.c[i] && row.c[i].v !== null && row.c[i].v !== undefined) ? row.c[i].v : '';
