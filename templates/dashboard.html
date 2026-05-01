@@ -30,11 +30,14 @@ body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-he
 .kpi.teal::before{background:var(--teal)}
 .kpi.blue::before{background:#378ADD}
 .kpi.purple::before{background:#8B5CF6}
+.kpi.red::before{background:var(--red)}
 .kpi-label{font-size:10px;font-family:'DM Mono',monospace;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:10px}
 .kpi-value{font-size:28px;font-weight:800;line-height:1}
 .kpi-sub{font-size:11px;color:var(--muted);margin-top:6px;font-family:'DM Mono',monospace}
 .two-col{display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-bottom:24px}
 @media(max-width:800px){.two-col{grid-template-columns:1fr}}
+.three-col{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:24px}
+@media(max-width:900px){.three-col{grid-template-columns:1fr}}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:22px}
 .card-title{font-size:11px;font-family:'DM Mono',monospace;color:var(--muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:18px;display:flex;align-items:center;gap:8px}
 .card-title span{color:var(--gold)}
@@ -51,6 +54,7 @@ body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-he
 .paid{background:rgba(29,158,117,0.15);color:var(--teal)}
 .pending{background:rgba(212,168,67,0.12);color:var(--gold)}
 .overdue{background:rgba(216,90,48,0.15);color:var(--red)}
+.sent{background:rgba(55,138,221,0.15);color:#378ADD}
 .broker-row{margin-bottom:16px}
 .broker-row:last-child{margin-bottom:0}
 .broker-info{display:flex;justify-content:space-between;margin-bottom:6px}
@@ -73,6 +77,13 @@ body{font-family:'Syne',sans-serif;background:var(--bg);color:var(--text);min-he
 .ret-tip strong{color:var(--text)}
 .bottom-row{display:grid;grid-template-columns:1fr 2fr;gap:16px;margin-bottom:24px}
 @media(max-width:900px){.bottom-row{grid-template-columns:1fr}}
+.inv-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.04)}
+.inv-row:last-child{border-bottom:none}
+.inv-left{display:flex;flex-direction:column;gap:3px}
+.inv-broker{font-size:13px;font-weight:600}
+.inv-date{font-size:11px;color:var(--muted);font-family:'DM Mono',monospace}
+.inv-right{display:flex;align-items:center;gap:10px}
+.inv-amt{font-size:13px;font-family:'DM Mono',monospace;font-weight:700;color:var(--teal)}
 .empty{color:var(--muted);font-size:13px;font-family:'DM Mono',monospace;text-align:center;padding:20px 0}
 </style>
 </head>
@@ -113,19 +124,25 @@ async function fetchSheet(name) {
   var match = text.match(/google\.visualization\.Query\.setResponse\(([\s\S]*)\)/);
   if (!match) return [];
   var json = JSON.parse(match[1]);
-  var rows = json.table.rows || [];
-  if (rows.length === 0) return [];
-  
-  // Get headers from first row
+  if (!json.table || !json.table.rows || json.table.rows.length === 0) return [];
+
+  // Use cols for headers (correct approach)
   var headers = json.table.cols.map(function(col) {
-  return col.label ? String(col.label).trim() : '';
+    return col.label ? String(col.label).trim() : '';
   });
-  
-  // Build objects from remaining rows
-  return rows.map(function(row) {
+
+  // Build objects from all rows
+  return json.table.rows.map(function(row) {
     var obj = {};
     headers.forEach(function(h, i) {
-      obj[h] = (row.c[i] && row.c[i].v !== null && row.c[i].v !== undefined) ? row.c[i].v : '';
+      var cell = row.c[i];
+      if (!cell || cell.v === null || cell.v === undefined) {
+        obj[h] = '';
+      } else if (cell.f) {
+        obj[h] = cell.f; // use formatted value (handles dates correctly)
+      } else {
+        obj[h] = cell.v;
+      }
     });
     return obj;
   });
@@ -136,18 +153,26 @@ async function load() {
     var results = await Promise.allSettled([
       fetchSheet('Loads'),
       fetchSheet('Expenses'),
-      fetchSheet('Retirement')
+      fetchSheet('Retirement'),
+      fetchSheet('Invoices')
     ]);
 
     var ld = results[0].status === 'fulfilled' ? results[0].value : [];
     var ed = results[1].status === 'fulfilled' ? results[1].value : [];
     var rd = results[2].status === 'fulfilled' ? results[2].value : [];
+    var iv = results[3].status === 'fulfilled' ? results[3].value : [];
 
     var totalRev = ld.reduce(function(s,r){ return s + (parseFloat(r['Amount']) || 0); }, 0);
     var totalMi  = ld.reduce(function(s,r){ return s + (parseFloat(r['Miles'])  || 0); }, 0);
     var totalExp = ed.reduce(function(s,r){ return s + (parseFloat(r['Amount']) || 0); }, 0);
     var net      = totalRev - totalExp;
     var avgRate  = totalMi > 0 ? (totalRev / totalMi).toFixed(2) : '0.00';
+
+    // Invoices summary
+    var overdueAmt = iv.filter(function(r){ return r['Status'] === 'Overdue'; })
+                       .reduce(function(s,r){ return s + (parseFloat(r['Amount']) || 0); }, 0);
+    var pendingAmt = iv.filter(function(r){ return r['Status'] === 'Pending' || r['Status'] === 'Sent'; })
+                       .reduce(function(s,r){ return s + (parseFloat(r['Amount']) || 0); }, 0);
 
     var brokers = {};
     ld.forEach(function(r) {
@@ -170,9 +195,11 @@ async function load() {
     var sugRet   = Math.min(net * 0.15, 1917).toFixed(0);
 
     var recent = [].concat(ld).reverse().slice(0, 5);
+    var recentInv = [].concat(iv).reverse().slice(0, 5);
 
     document.getElementById('upd').textContent = new Date().toLocaleTimeString();
 
+    // ── KPI Row ──
     var html = '<div class="kpi-grid">'
       + '<div class="kpi gold"><div class="kpi-label">Gross Revenue</div><div class="kpi-value">' + fmt(totalRev) + '</div><div class="kpi-sub">' + ld.length + ' loads total</div></div>'
       + '<div class="kpi teal"><div class="kpi-label">Net Profit</div><div class="kpi-value">' + fmt(net) + '</div><div class="kpi-sub">after ' + fmt(totalExp) + ' expenses</div></div>'
@@ -180,6 +207,7 @@ async function load() {
       + '<div class="kpi purple"><div class="kpi-label">401k Progress</div><div class="kpi-value">' + fmt(retTotal) + '</div><div class="kpi-sub">' + retPct + '% of $23k limit</div></div>'
       + '</div>';
 
+    // ── Recent Loads + Broker Volume ──
     html += '<div class="two-col"><div class="card"><div class="card-title"><span>*</span> Recent Loads</div>';
     if (recent.length === 0) {
       html += '<div class="empty">No loads logged yet</div>';
@@ -215,9 +243,13 @@ async function load() {
           + '</div>';
       });
     }
-
     html += '</div></div>';
-    html += '<div class="bottom-row"><div class="card"><div class="card-title"><span>*</span> Expenses</div>';
+
+    // ── Expenses + Invoices + Retirement ──
+    html += '<div class="three-col">';
+
+    // Expenses
+    html += '<div class="card"><div class="card-title"><span>*</span> Expenses</div>';
     if (cArr.length === 0) {
       html += '<div class="empty">No expenses yet</div>';
     } else {
@@ -229,14 +261,39 @@ async function load() {
           + '</div>';
       });
     }
+    html += '</div>';
 
-    html += '</div><div class="card"><div class="card-title"><span>*</span> Solo 401(k) Retirement</div>'
+    // Invoices
+    html += '<div class="card"><div class="card-title"><span>*</span> Invoices';
+    if (overdueAmt > 0) html += ' <span style="color:var(--red);margin-left:auto">' + fmt(overdueAmt) + ' overdue</span>';
+    html += '</div>';
+    if (recentInv.length === 0) {
+      html += '<div class="empty">No invoices yet</div>';
+    } else {
+      recentInv.forEach(function(r) {
+        var br  = r['Broker'] || '?';
+        var am  = r['Amount'] || 0;
+        var st  = r['Status'] || 'Pending';
+        var dt  = r['Load Date'] || r['Date Logged'] || '';
+        var cls = st === 'Paid' ? 'paid' : st === 'Overdue' ? 'overdue' : st === 'Sent' ? 'sent' : 'pending';
+        html += '<div class="inv-row">'
+          + '<div class="inv-left"><div class="inv-broker">' + br + '</div><div class="inv-date">' + dt + '</div></div>'
+          + '<div class="inv-right"><div class="inv-amt">' + fmt(am) + '</div><span class="pill ' + cls + '">' + st + '</span></div>'
+          + '</div>';
+      });
+    }
+    html += '</div>';
+
+    // Retirement
+    html += '<div class="card"><div class="card-title"><span>*</span> Solo 401(k)</div>'
       + '<div class="ret-big">' + fmt(retTotal) + '</div>'
       + '<div class="ret-sub">contributed in 2026</div>'
       + '<div class="ret-track"><div class="ret-fill" id="rbar" style="width:0%"></div></div>'
       + '<div class="ret-labels"><span>$0</span><span>' + retPct + '%</span><span>$23,000</span></div>'
       + '<div class="ret-tip"><p>Suggested this month: <strong>' + fmt(sugRet) + '</strong> based on 15% of your net profit</p></div>'
-      + '</div></div>';
+      + '</div>';
+
+    html += '</div>'; // close three-col
 
     document.getElementById('dash').innerHTML = html;
     document.getElementById('loading').style.display = 'none';
