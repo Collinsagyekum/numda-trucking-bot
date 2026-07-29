@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from flask import Flask, request, jsonify, render_template
 from datetime import datetime
@@ -40,6 +41,8 @@ SYSTEM_PROMPT = (
     "[LOG_INVOICE|broker|amount|status|load_date] "
     "Example: [LOG_INVOICE|Echo Global|1840|Pending|2026-04-20] "
     "Status can be: Pending, Sent, Paid, Overdue. "
+    "When an invoice status changes, send the tag again with the SAME broker and amount as the original load "
+    "so the load's status is kept in sync. "
 
     "When you detect MILEAGE per state for IFTA, include this tag: "
     "[LOG_MILEAGE|state|miles|date] "
@@ -51,8 +54,14 @@ SYSTEM_PROMPT = (
     "Account types: Solo 401k, IRA, SEP IRA. "
 
     "When the user asks for a weekly summary or you are summarizing the week, include this tag: [LOG_WEEKLY|week_start|total_loads|total_miles|gross_revenue|total_expenses|net_profit] Example: [LOG_WEEKLY|2026-04-14|5|1240|6800|1200|5600] Keep responses under 5 sentences. Plain text only, no markdown. "
+    "If one message reports several things, include a separate tag for each one — for example two fuel stops "
+    "get two [LOG_EXPENSE|...] tags. "
     "Always strip the tags from your visible reply — they are for the system only."
 )
+
+
+LOADS_HEADERS = ["Date", "Origin", "Destination", "Miles", "Amount", "Broker", "Invoice Status"]
+INVOICES_HEADERS = ["Date Logged", "Broker", "Amount", "Status", "Load Date"]
 
 
 def get_or_create_worksheet(sheet, title, headers):
@@ -77,119 +86,242 @@ def get_sheet():
     return client.open_by_key(SPREADSHEET_ID)
 
 
+def to_number(value):
+    cleaned = str(value).replace("$", "").replace(",", "").strip()
+    if not cleaned:
+        return None
+    try:
+        return float(cleaned)
+    except ValueError:
+        return None
+
+
+def numeric(value):
+    """Return the value as a number when possible so Sheets stores it numerically."""
+    num = to_number(value)
+    if num is None:
+        return value
+    return int(num) if num.is_integer() else num
+
+
+def same_text(a, b):
+    return str(a).strip().lower() == str(b).strip().lower()
+
+
+def same_amount(a, b):
+    na = to_number(a)
+    nb = to_number(b)
+    if na is None or nb is None:
+        return False
+    return abs(na - nb) < 0.01
+
+
+def column_index(header, name):
+    """1-based index of a column by header name, or None if absent."""
+    for i, label in enumerate(header):
+        if same_text(label, name):
+            return i + 1
+    return None
+
+
+def cell_value(row, col):
+    if not col or len(row) < col:
+        return ""
+    return row[col - 1]
+
+
+def match_invoice_row(rows, header, broker, amount, load_date):
+    """Find an existing invoice for this broker/amount, newest first.
+
+    Returns (row_number, current_status), or (None, None) when there is no match.
+    """
+    b_col = column_index(header, "Broker")
+    a_col = column_index(header, "Amount")
+    d_col = column_index(header, "Load Date")
+    s_col = column_index(header, "Status")
+    if not b_col or not a_col:
+        return None, None
+    for index in range(len(rows) - 1, 0, -1):
+        row = rows[index]
+        if not same_text(cell_value(row, b_col), broker):
+            continue
+        if not same_amount(cell_value(row, a_col), amount):
+            continue
+        # A load date on both sides has to agree; a blank on either side is a wildcard.
+        row_date = cell_value(row, d_col)
+        if load_date and row_date and not same_text(row_date, load_date):
+            continue
+        return index + 1, cell_value(row, s_col)
+    return None, None
+
+
+def existing_invoice_status(sheet, broker, amount):
+    """Status already recorded for a load's invoice, when the invoice was logged first."""
+    try:
+        ws = sheet.worksheet("Invoices")
+    except Exception:
+        return None
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return None
+    _, status = match_invoice_row(rows, rows[0], broker, amount, "")
+    return status or None
+
+
+def update_load_invoice_status(sheet, broker, amount, status, load_date):
+    """Push an invoice status onto the Loads row it belongs to."""
+    try:
+        ws = sheet.worksheet("Loads")
+    except Exception:
+        return False
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return False
+    header = rows[0]
+    b_col = column_index(header, "Broker")
+    a_col = column_index(header, "Amount")
+    s_col = column_index(header, "Invoice Status")
+    d_col = column_index(header, "Date")
+    if not b_col or not a_col or not s_col:
+        return False
+
+    matches = []
+    for index in range(1, len(rows)):
+        row = rows[index]
+        if same_text(cell_value(row, b_col), broker) and same_amount(cell_value(row, a_col), amount):
+            matches.append(index + 1)
+    if not matches:
+        return False
+
+    # Same broker and rate can repeat, so prefer the run that matches the load date.
+    if load_date and d_col:
+        dated = [r for r in matches if same_text(cell_value(rows[r - 1], d_col), load_date)]
+        if dated:
+            matches = dated
+
+    row_num = matches[-1]
+    if same_text(cell_value(rows[row_num - 1], s_col), status):
+        return True
+    ws.update_cell(row_num, s_col, status)
+    return True
+
+
+def upsert_invoice(ws, broker, amount, status, load_date):
+    """Update a matching invoice's status, or append it when it is new."""
+    rows = ws.get_all_values()
+    header = rows[0] if rows else INVOICES_HEADERS
+    row_num, current = match_invoice_row(rows, header, broker, amount, load_date)
+    s_col = column_index(header, "Status")
+    if row_num and s_col:
+        if not same_text(current, status):
+            ws.update_cell(row_num, s_col, status)
+        return
+    ws.append_row([datetime.now().strftime("%Y-%m-%d"), broker, numeric(amount), status, load_date])
+
+
 def log_load(origin, destination, miles, amount, broker):
     sheet = get_sheet()
-    ws = get_or_create_worksheet(sheet, "Loads", ["Date", "Origin", "Destination", "Miles", "Amount", "Broker", "Invoice Status"])
-    ws.append_row([datetime.now().strftime("%Y-%m-%d"), origin, destination, miles, amount, broker, "Pending"])
+    ws = get_or_create_worksheet(sheet, "Loads", LOADS_HEADERS)
+    status = "Pending"
+    try:
+        known = existing_invoice_status(sheet, broker, amount)
+        if known:
+            status = known
+    except Exception as e:
+        print("Invoice status lookup error:", e)
+    ws.append_row([datetime.now().strftime("%Y-%m-%d"), origin, destination, numeric(miles), numeric(amount), broker, status])
 
 
 def log_expense(category, amount, notes):
     sheet = get_sheet()
     ws = get_or_create_worksheet(sheet, "Expenses", ["Date", "Category", "Amount", "Notes"])
-    ws.append_row([datetime.now().strftime("%Y-%m-%d"), category, amount, notes])
+    ws.append_row([datetime.now().strftime("%Y-%m-%d"), category, numeric(amount), notes])
 
 
 def log_maintenance(description, cost, mileage):
     sheet = get_sheet()
     ws = get_or_create_worksheet(sheet, "Maintenance", ["Date", "Description", "Cost", "Mileage"])
-    ws.append_row([datetime.now().strftime("%Y-%m-%d"), description, cost, mileage])
+    ws.append_row([datetime.now().strftime("%Y-%m-%d"), description, numeric(cost), numeric(mileage)])
 
 
 def log_invoice(broker, amount, status, load_date):
     sheet = get_sheet()
-    ws = get_or_create_worksheet(sheet, "Invoices", ["Date Logged", "Broker", "Amount", "Status", "Load Date"])
-    ws.append_row([datetime.now().strftime("%Y-%m-%d"), broker, amount, status, load_date])
+    ws = get_or_create_worksheet(sheet, "Invoices", INVOICES_HEADERS)
+    upsert_invoice(ws, broker, amount, status, load_date)
+    try:
+        update_load_invoice_status(sheet, broker, amount, status, load_date)
+    except Exception as e:
+        print("Load status update error:", e)
 
 
 def log_mileage(state, miles, date):
     sheet = get_sheet()
     ws = get_or_create_worksheet(sheet, "Mileage", ["Date", "State", "Miles"])
-    ws.append_row([date, state, miles])
+    ws.append_row([date, state, numeric(miles)])
 
 
 def log_retirement(contribution, account_type, notes):
     sheet = get_sheet()
     ws = get_or_create_worksheet(sheet, "Retirement", ["Date", "Contribution Amount", "Account Type", "Notes"])
-    ws.append_row([datetime.now().strftime("%Y-%m-%d"), contribution, account_type, notes])
-
-
-def extract_tag(reply, tag):
-    if tag not in reply:
-        return None
-    try:
-        start = reply.index(tag) + len(tag)
-        end = reply.index("]", start)
-        return reply[start:end].split("|")
-    except Exception:
-        return None
-
-
-def parse_and_log(reply):
-    try:
-        parts = extract_tag(reply, "[LOG_LOAD|")
-        if parts and len(parts) == 5:
-            log_load(parts[0], parts[1], parts[2], parts[3], parts[4])
-    except Exception as e:
-        print("Load log error:", e)
-
-    try:
-        parts = extract_tag(reply, "[LOG_EXPENSE|")
-        if parts and len(parts) == 3:
-            log_expense(parts[0], parts[1], parts[2])
-    except Exception as e:
-        print("Expense log error:", e)
-
-    try:
-        parts = extract_tag(reply, "[LOG_MAINTENANCE|")
-        if parts and len(parts) == 3:
-            log_maintenance(parts[0], parts[1], parts[2])
-    except Exception as e:
-        print("Maintenance log error:", e)
-
-    try:
-        parts = extract_tag(reply, "[LOG_INVOICE|")
-        if parts and len(parts) == 4:
-            log_invoice(parts[0], parts[1], parts[2], parts[3])
-    except Exception as e:
-        print("Invoice log error:", e)
-
-    try:
-        parts = extract_tag(reply, "[LOG_MILEAGE|")
-        if parts and len(parts) == 3:
-            log_mileage(parts[0], parts[1], parts[2])
-    except Exception as e:
-        print("Mileage log error:", e)
-
-    try:
-        parts = extract_tag(reply, "[LOG_RETIREMENT|")
-        if parts and len(parts) == 3:
-            log_retirement(parts[0], parts[1], parts[2])
-    except Exception as e:
-        print("Retirement log error:", e)
-
-
-    try:
-        parts = extract_tag(reply, "[LOG_WEEKLY|")
-        if parts and len(parts) == 6:
-            log_weekly_summary(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
-    except Exception as e:
-        print("Weekly summary log error:", e)
-
-    clean = reply
-    for tag in ["[LOG_LOAD|", "[LOG_EXPENSE|", "[LOG_MAINTENANCE|", "[LOG_INVOICE|", "[LOG_MILEAGE|", "[LOG_RETIREMENT|", "[LOG_WEEKLY|"]:
-        if tag in clean:
-            start = clean.index(tag)
-            end = clean.index("]", start) + 1
-            clean = clean[:start].strip() + clean[end:].strip()
-
-    return clean.strip()
-
+    ws.append_row([datetime.now().strftime("%Y-%m-%d"), numeric(contribution), account_type, notes])
 
 
 def log_weekly_summary(week_start, total_loads, total_miles, gross_revenue, total_expenses, net_profit):
     sheet = get_sheet()
     ws = get_or_create_worksheet(sheet, "Weekly Summary", ["Week Starting", "Total Loads", "Total Miles", "Gross Revenue", "Total Expenses", "Net Profit"])
-    ws.append_row([week_start, total_loads, total_miles, gross_revenue, total_expenses, net_profit])
+    ws.append_row([week_start, numeric(total_loads), numeric(total_miles), numeric(gross_revenue), numeric(total_expenses), numeric(net_profit)])
+
+
+# tag, expected field count, handler, label for error logs
+TAG_HANDLERS = [
+    ("[LOG_LOAD|", 5, log_load, "Load"),
+    ("[LOG_EXPENSE|", 3, log_expense, "Expense"),
+    ("[LOG_MAINTENANCE|", 3, log_maintenance, "Maintenance"),
+    ("[LOG_INVOICE|", 4, log_invoice, "Invoice"),
+    ("[LOG_MILEAGE|", 3, log_mileage, "Mileage"),
+    ("[LOG_RETIREMENT|", 3, log_retirement, "Retirement"),
+    ("[LOG_WEEKLY|", 6, log_weekly_summary, "Weekly summary"),
+]
+
+TAG_PATTERN = re.compile("|".join(re.escape(tag) + r"[^\]]*\]" for tag, _, _, _ in TAG_HANDLERS))
+
+
+def extract_tags(reply, tag):
+    """Fields for every occurrence of a tag, so one message can log several entries."""
+    found = []
+    search_from = 0
+    while True:
+        start = reply.find(tag, search_from)
+        if start == -1:
+            return found
+        end = reply.find("]", start + len(tag))
+        if end == -1:
+            return found
+        found.append(reply[start + len(tag):end].split("|"))
+        search_from = end + 1
+
+
+def strip_tags(reply):
+    clean = TAG_PATTERN.sub("", reply)
+    clean = re.sub(r"[ \t]{2,}", " ", clean)
+    clean = re.sub(r"\n{3,}", "\n\n", clean)
+    clean = re.sub(r"[ \t]+\n", "\n", clean)
+    return clean.strip()
+
+
+def parse_and_log(reply):
+    for tag, field_count, handler, label in TAG_HANDLERS:
+        for parts in extract_tags(reply, tag):
+            if len(parts) != field_count:
+                print(label + " log error: expected " + str(field_count) + " fields, got " + str(len(parts)))
+                continue
+            try:
+                handler(*parts)
+            except Exception as e:
+                print(label + " log error:", e)
+
+    return strip_tags(reply)
+
 
 def ask_claude(user_phone, user_message):
     if user_phone not in conversation_history:
